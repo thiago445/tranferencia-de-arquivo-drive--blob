@@ -1,10 +1,6 @@
-# pip install streamlit google-api-python-client google-auth azure-storage-blob
+# pip install streamlit azure-storage-blob
 
-import io
 import streamlit as st
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-from google.oauth2 import service_account
 from azure.storage.blob import BlobServiceClient
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -18,31 +14,18 @@ AZURE_CONN_STR = (
     "&sig=4ZaFti31frOhQfvDnNOlFPaad%2FgAjEeDiiGS8AlxJfU%3D"
 )
 AZURE_CONTAINER = "aluno-thiago"
-GDRIVE_CREDS    = "credentials.json"
-SCOPES          = ["https://www.googleapis.com/auth/drive.readonly"]
 
 # ── Clients ───────────────────────────────────────────────────────────────────
-@st.cache_resource
-def gdrive():
-    creds = service_account.Credentials.from_service_account_file(GDRIVE_CREDS, scopes=SCOPES)
-    return build("drive", "v3", credentials=creds)
-
 @st.cache_resource
 def azure():
     return BlobServiceClient.from_connection_string(AZURE_CONN_STR)
 
 # ── Functions ─────────────────────────────────────────────────────────────────
-def list_drive(folder_id="root"):
-    q = f"'{folder_id}' in parents and trashed=false"
-    res = gdrive().files().list(q=q, fields="files(id,name,mimeType,size)").execute()
-    return res.get("files", [])
-
 def get_or_create_container():
-    # Cria o cliente do Azure
     blob_service_client = azure()
     container_client = blob_service_client.get_container_client(AZURE_CONTAINER)
     
-    # Verifica se o contêiner existe. Se não existir, cria na hora!
+    # Cria o contêiner automaticamente se não existir
     if not container_client.exists():
         blob_service_client.create_container(AZURE_CONTAINER)
         
@@ -52,61 +35,42 @@ def list_blobs():
     cc = get_or_create_container()
     return [b.name for b in cc.list_blobs()]
 
-def migrate(files, log):
-    svc = gdrive()
-    cc  = get_or_create_container()
-    
+def upload_files(files, log):
+    cc = get_or_create_container()
     for f in files:
-        name = f["name"]
+        name = f.name
         try:
-            buf = io.BytesIO()
-            req = svc.files().get_media(fileId=f["id"])
-            dl  = MediaIoBaseDownload(buf, req)
-            done = False
-            while not done:
-                _, done = dl.next_chunk()
-            buf.seek(0)
-            cc.upload_blob(name, buf, overwrite=True)
+            cc.upload_blob(name, f, overwrite=True)
             msg = f"✅ {name}"
             print(msg)
         except Exception as e:
-            msg = f"❌ {name} — {e}"
+            msg = f"❌ Erro em {name} — {e}"
             print(msg)
         log.markdown(f"`{msg}`")
 
 # ── UI ────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Drive → Azure", page_icon="☁️", layout="wide")
-st.title("☁️ Google Drive → Azure Blob Storage")
+st.set_page_config(page_title="Upload Local → Azure", page_icon="☁️", layout="wide")
+st.title("☁️ Upload Local → Azure Blob Storage")
+st.write("Selecione os arquivos do seu computador para enviá-los diretamente para o contêiner da Azure.")
 
-folder_id = st.text_input("Google Drive Folder ID (deixe vazio para raiz)", value="root")
+# Área para o usuário fazer upload dos arquivos do próprio computador
+uploaded_files = st.file_uploader("📂 Escolha os arquivos de origem", accept_multiple_files=True)
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
-    if st.button("📂 Listar Drive"):
-        with st.spinner("Buscando arquivos..."):
-            files = list_drive(folder_id)
-        st.success(f"{len(files)} arquivo(s) encontrado(s)")
-        st.dataframe(
-            [{"Nome": f["name"], "Tipo": f["mimeType"], "Tamanho": f.get("size", "—")} for f in files],
-            use_container_width=True,
-        )
-
-with col2:
-    if st.button("🗂️ Listar Azure"):
+    if st.button("🗂️ Listar Destino (Azure)"):
         with st.spinner("Buscando blobs..."):
             blobs = list_blobs()
-        st.success(f"{len(blobs)} blob(s) encontrado(s)")
-        st.dataframe({"Blob": blobs}, use_container_width=True)
+        st.success(f"{len(blobs)} arquivo(s) encontrado(s) no Azure")
+        st.dataframe({"Arquivos na Nuvem": blobs}, use_container_width=True)
 
-with col3:
-    if st.button("🚀 Migrar Arquivos", type="primary"):
-        with st.spinner("Migrando..."):
-            files = list_drive(folder_id)
-        if not files:
-            st.warning("Nenhum arquivo encontrado no Drive.")
+with col2:
+    if st.button("🚀 Enviar Arquivos para Azure", type="primary"):
+        if not uploaded_files:
+            st.warning("Por favor, selecione pelo menos um arquivo na área acima primeiro.")
         else:
-            st.info(f"Migrando {len(files)} arquivo(s)...")
+            st.info(f"Enviando {len(uploaded_files)} arquivo(s)...")
             log = st.empty()
-            migrate(files, log)
-            st.success("Migração concluída!")
+            upload_files(uploaded_files, log)
+            st.success("Transferência concluída!")
